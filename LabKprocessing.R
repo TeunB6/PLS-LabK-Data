@@ -7,6 +7,7 @@ B = 15.2e3
 T0 = 293
 RT0 = 0.93
 alpha0 = 5.4e-3
+m2nm_conv = 1e9
 
 # Tidy dataset
 full_data <- data %>% 
@@ -39,12 +40,12 @@ processed <- full_data %>%
   # filter(refraction < 1.684) %>%
   
   # Calculate Lambda
-  mutate(lambda = sqrt((B/(refraction - A)))) 
+  mutate(lambda = sqrt((B/(refraction - A))) / m2nm_conv)
 
 # Tune A
 while (any(is.na(processed$lambda))) {
   A = A - 0.01
-  processed$lambda = sqrt((B / (processed$refraction - A)))
+  processed$lambda = sqrt((B / (processed$refraction - A)))  / m2nm_conv
 }
 
 write.csv(processed, file="processeddata.csv")
@@ -53,7 +54,7 @@ ggplot(processed, aes(x=Time, y=lambda, col=Run, group=Run)) + geom_line()
 
 
 # Plot curves
-ggplot(processed, aes(x=lambda, y=Intensity, col=Run, group=Run)) + geom_line()
+ggplot(processed %>% filter(lambda < 1e-6), aes(x=lambda, y=Intensity, col=Run, group=Run)) + geom_line()
 ggsave("curves.png")
 
 # Get Resistance data
@@ -76,7 +77,7 @@ lambda_T <- relevant_data %>%
         # Calculate Temperature
             left_join(resistance_data, by = "Run") %>%
             select(!c("Current", "LampVoltage")) %>%
-            
+            1.
             mutate(temperature = T0 + (((resistance/RT0)-1)/alpha0)) %>%
             group_by(temperature) %>%
         # Get Mean and SD
@@ -104,7 +105,9 @@ k_b = (constant0*h*c)/slope
 ggplot(lambda_T, aes(x = Tinv, y = lambda_peak)) + 
   geom_point() + 
   geom_line(aes(x=Tinv, y=lTinv_model$fitted.values)) +
-  labs(x = "1/Temperature", y = "Lambda Peak", title = "Temperature vs Lambda Peak")
+  geom_errorbar(aes(ymin = lambda_peak - lambda_peak_error, 
+                    ymax = lambda_peak + lambda_peak_error)) +
+  labs(x = "1/Temperature (K)", y = "Mean Peak Wavelength (m)")
 ggsave("lambdatemp.png")
 
 ggplot(lambda_T, aes(x=temperature, y=lambda_peak)) + geom_point()
@@ -130,8 +133,9 @@ total_intensity_temp <- relevant_data %>%
   # Filter outliers
         group_by(temperature) %>%
         summarise(U = auc(lambda, Intensity)) %>%
-        filter(U > 3000) %>%
-        mutate(temperature4 = temperature^4)
+        mutate(temperature4 = temperature^4) %>%
+        filter(U > 4e-6) %>%
+        mutate(U_error = U*0.1)
 write.csv(total_intensity_temp, "Utemp.csv")
 
 # Model relation
@@ -143,26 +147,11 @@ sigma = 5.670374419e-8
 
 dev = abs(sigma_approx - sigma)
 
-ggplot(total_intensity_temp, aes(x=temperature4, y=U)) + geom_point() + geom_line(aes(y=UT_model$fitted.values))
+ggplot(total_intensity_temp, aes(x=temperature4, y=U)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin=U-U_error,ymax=U+U_error)) + 
+  geom_line(aes(y=UT_model$fitted.values)) +
+  labs(x="Temperature^4 (K^4)", y="Total Relative Intensity (%)")
 ggsave("UT4.png")
 
-## Reverse engineering/Terrible scientific practice
 k_b_true = 1.380649e-23
-m2nm_conv = 1e9
-
-reverse_engineered_angles <- lambda_T %>%
-  mutate(expected_lambda_peak = (constant0*(h*c)/k_b_true)*Tinv*m2nm_conv) %>%
-  mutate(expected_theta = asin((sqrt(3)*sqrt(A+(B/expected_lambda_peak^2)^2-0.75)-0.5)/2)) %>%
-  mutate(expected_angle = ((67 - (expected_theta / (PI/180)))/deg_per_rev)*(2*PI)) %>%
-  mutate(measured_theta = asin((sqrt(3)*sqrt(A+(B/lambda_peak^2)^2-0.75)-0.5)/2)) %>%
-  mutate(measured_angle = ((67 - (measured_theta / (PI/180)))/deg_per_rev)*(2*PI)) %>%
-  mutate(correction = expected_angle/measured_angle)
-  
-
-temp <- processed %>%
-  # Filters peak intensity
-  group_by(Run) %>%
-  filter(Intensity == max(Intensity)) %>%
-  left_join(resistance_data, by="Run")
-
-
