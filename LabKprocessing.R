@@ -23,30 +23,34 @@ full_data <- data %>%
                    "Time" = Time..s..)
 
 
-# Examining other data I found range 2-2.25 for our spectrumlight we find around 1.5-1.68 thus we 
 deg_per_rev = 7.152770364
 start_deg = 67
 
 processed <- full_data %>%
   filter(Angle <= 25) %>%
-  group_by(Run) %>%
   # Calculate Theta
   mutate(Rot_deg = start_deg-(Angle/(2*PI))*deg_per_rev) %>%
   mutate(Theta = Rot_deg*(PI/180)) %>%
-
+  mutate(Theta_error = PI/45) %>%
   # Calculate refraction 
   mutate(refraction = sqrt(((2 / sqrt(3)) * sin(Theta) + 0.5)^2 + 0.75)) %>%
-  # Filter out asymptotic refraction values
-  # filter(refraction < 1.684) %>%
-  
+  mutate(refraction_error = ((((2/sqrt(3)*sin(Theta)+0.5)^2+0.75)^(-1.5) *
+           (2/sqrt(3)*sin(Theta)+0.5) *
+           (2/sqrt(3)*cos(Theta)) * Theta_error) / Theta) * refraction) %>%
+
   # Calculate Lambda
-  mutate(lambda = sqrt((B/(refraction - A))) / m2nm_conv)
+  mutate(lambda = sqrt((B/(refraction - A))) / m2nm_conv) %>%
+
 
 # Tune A
 while (any(is.na(processed$lambda))) {
   A = A - 0.01
   processed$lambda = sqrt((B / (processed$refraction - A)))  / m2nm_conv
 }
+processed$lambda_error = (0.5 * (B / (processed$refraction - A))^(-1.5) * 
+                            B * (processed$refraction - A)^(-2)) *
+                            (processed$refraction_error / processed$refraction) *
+                            processed$lambda
 
 write.csv(processed, file="processeddata.csv")
 
@@ -54,7 +58,9 @@ ggplot(processed, aes(x=Time, y=lambda, col=Run, group=Run)) + geom_line()
 
 
 # Plot curves
-ggplot(processed %>% filter(lambda < 1e-6), aes(x=lambda, y=Intensity, col=Run, group=Run)) + geom_line()
+ggplot(processed %>% filter(lambda < 1e-6), aes(x=lambda, y=Intensity, col=Run, group=Run)) +
+  geom_line() +
+  labs(x="Wavelength (m)", y="Relative Intensity (%)")
 ggsave("curves.png")
 
 # Get Resistance data
@@ -68,7 +74,7 @@ current_data <- processed %>%
 resistance_data <- voltage_data %>%
                    left_join(current_data, by = "Run") %>%
                    mutate(resistance = LampVoltage/Current)
-relevant_data <- processed %>% select(c("Run", "lambda", "Intensity"))
+relevant_data <- processed %>% select(c("Run", "lambda", "lambda_error", "Intensity"))
 
 lambda_T <- relevant_data %>%
         # Filters peak intensity
@@ -77,15 +83,14 @@ lambda_T <- relevant_data %>%
         # Calculate Temperature
             left_join(resistance_data, by = "Run") %>%
             select(!c("Current", "LampVoltage")) %>%
-            1.
             mutate(temperature = T0 + (((resistance/RT0)-1)/alpha0)) %>%
             group_by(temperature) %>%
         # Get Mean and SD
-            summarise(lambda_peak = mean(lambda), lambda_peak_error = sd(lambda)) %>%
-            drop_na() %>%
+            summarise(lambda_peak = mean(lambda), lambda_peak_error = max(sd(lambda), lambda_error)) %>%
         # Get 1/T
-            mutate(Tinv = 1/temperature)
-
+            mutate(Tinv = 1/temperature) %>%
+            drop_na()
+            
 
 write.csv(lambda_T, file="peaklambda_temp.csv")
 
